@@ -248,14 +248,16 @@ def download_missing_songs(
     songs_folder: Path,
     manifest: dict[int, ManifestEntry],
     existing_indices: set[int],
+    output_path: Path,
     dry_run: bool = False,
+    start_offset: int = 0,
 ) -> DownloadReport:
-    """Downloads all missing songs."""
+    """Downloads all missing songs, writing reports incrementally."""
     report = DownloadReport()
     missing_entries = [e for idx, e in sorted(manifest.items()) if idx not in existing_indices]
 
     # TODO: Remove this limit after testing
-    # missing_entries = missing_entries[:10]
+    # missing_entries = missing_entries[:100]
 
     # Mark existing as already_exists
     for idx in existing_indices:
@@ -266,7 +268,17 @@ def download_missing_songs(
         print("No missing songs to download.")
         return report
 
+    # Rotate the list to start from the offset, then loop back
+    if start_offset > 0 and len(missing_entries) > 1:
+        effective_offset = start_offset % len(missing_entries)
+        missing_entries = missing_entries[effective_offset:] + missing_entries[:effective_offset]
+        print(f"Starting from offset {effective_offset} (rotated order)")
+
     print(f"Found {len(missing_entries)} missing songs to download.")
+
+    # Clear the failed manifest file at the start
+    if not dry_run:
+        clear_failed_manifest(output_path)
 
     for i, entry in enumerate(missing_entries):
         print(f"\n[{i + 1}/{len(missing_entries)}] {entry.index_str} - {entry.title}")
@@ -284,6 +296,10 @@ def download_missing_songs(
         else:
             print(f"  FAILED: {error}")
             report.failed.append((entry, error))
+            append_failed_entry(entry, output_path)
+
+        # Write report after each download attempt
+        write_report(report, output_path, dry_run)
 
         # Rate limiting delay (skip after last download)
         if i < len(missing_entries) - 1:
@@ -293,18 +309,23 @@ def download_missing_songs(
     return report
 
 
-def write_failed_manifest(report: DownloadReport, output_path: Path) -> None:
-    """Writes failed downloads to a manifest file for reuse as input."""
-    if not report.failed:
-        return
+def get_failed_manifest_path(output_path: Path) -> Path:
+    """Returns the path for the failed downloads manifest file."""
+    return output_path.parent / "failed_downloads.txt"
 
-    lines: list[str] = []
-    for entry, _ in report.failed:
-        lines.append(f"{entry.index_str};;;{entry.video_id};;;{entry.title}")
 
-    failed_path = output_path.parent / "failed_downloads.txt"
-    failed_path.write_text("\n".join(lines), encoding="utf-8-sig")
-    print(f"Failed downloads manifest written to: {failed_path}")
+def clear_failed_manifest(output_path: Path) -> None:
+    """Clears/creates the failed downloads manifest file."""
+    failed_path = get_failed_manifest_path(output_path)
+    failed_path.write_text("", encoding="utf-8-sig")
+
+
+def append_failed_entry(entry: ManifestEntry, output_path: Path) -> None:
+    """Appends a single failed entry to the failed downloads manifest."""
+    failed_path = get_failed_manifest_path(output_path)
+    line = f"{entry.index_str};;;{entry.video_id};;;{entry.title}\n"
+    with open(failed_path, "a", encoding="utf-8-sig") as f:
+        f.write(line)
 
 
 def write_report(report: DownloadReport, output_path: Path, dry_run: bool) -> None:
@@ -391,6 +412,13 @@ def main() -> int:
         help="Show what would be downloaded without actually downloading",
     )
 
+    parser.add_argument(
+        "--start-offset",
+        type=int,
+        default=0,
+        help="Skip ahead N songs in the queue, then loop back to process skipped ones",
+    )
+
     args = parser.parse_args()
 
     # Validate paths
@@ -427,17 +455,18 @@ def main() -> int:
     existing_indices = find_existing_indices(args.songs_folder, manifest)
     print(f"Found {len(existing_indices)} existing songs")
 
-    # Download missing songs
+    # Download missing songs (reports written incrementally)
     report = download_missing_songs(
         args.songs_folder,
         manifest,
         existing_indices,
+        output_path,
         dry_run=args.dry_run,
+        start_offset=args.start_offset,
     )
 
-    # Write report
+    # Final report write (for dry-run or when no downloads attempted)
     write_report(report, output_path, args.dry_run)
-    write_failed_manifest(report, output_path)
 
     # Print summary
     print("-" * 40)
