@@ -39,7 +39,7 @@ ENCODINGS_TO_TRY: list[str] = [
 ]
 
 # Download settings
-DOWNLOAD_DELAY_SECONDS: int = 7.5
+DOWNLOAD_DELAY_SECONDS: int = 4
 
 
 @dataclass
