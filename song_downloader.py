@@ -81,6 +81,8 @@ def read_manifest_with_encoding(manifest_path: Path) -> tuple[str, str]:
     for encoding in ENCODINGS_TO_TRY:
         try:
             content = manifest_path.read_text(encoding=encoding)
+            # Strip UTF-8 BOM if present
+            content = content.removeprefix("\ufeff")
             if content and validate_manifest_content(content):
                 return content, encoding
         except (UnicodeDecodeError, UnicodeError):
