@@ -2,7 +2,7 @@
 Alternate Song Downloader
 
 Downloads alternate versions of songs that failed to download from their original video IDs.
-Uses yt-dlp to download audio and extracts the title from YouTube metadata.
+Uses yt-dlp to download audio; titles are extracted from the resulting filenames.
 
 Expected input format per line:
 0001;;;VIDEO_ID
@@ -160,6 +160,28 @@ def check_ytdlp_installed() -> bool:
         return False
 
 
+def find_downloaded_file(songs_folder: Path, index: int) -> Path | None:
+    """Finds the most recently modified file matching the given index."""
+    pattern = f"{index:04d} - *"
+    matches = list(songs_folder.glob(pattern))
+    media_matches = [f for f in matches if f.is_file() and is_media_file(f)]
+
+    if not media_matches:
+        return None
+
+    # Return most recently modified if multiple matches
+    return max(media_matches, key=lambda f: f.stat().st_mtime)
+
+
+def extract_title_from_filename(file_path: Path) -> str | None:
+    """Extracts the title portion from a filename like '0001 - Title.ext'."""
+    stem = file_path.stem
+    match = re.match(r"^\d{4}\s*-\s*(.+)$", stem)
+    if match:
+        return match.group(1)
+    return None
+
+
 def download_song(entry: AlternateEntry, songs_folder: Path) -> tuple[bool, str]:
     """
     Downloads a single song using yt-dlp.
@@ -214,7 +236,7 @@ def download_alternates(
     print(f"Processing {len(entries)} alternate entries.")
 
     for i, entry in enumerate(entries):
-        print(f"\n[{i + 1}/{len(entries)}] {entry.index_str} - Video ID: {entry.video_id}")
+        print(f"\n[{i + 1}/{len(entries)}] Index: {entry.index_str}, Video ID: {entry.video_id}")
 
         # Safety check: skip if file already exists
         if entry.index in existing_indices:
@@ -224,16 +246,23 @@ def download_alternates(
             continue
 
         if dry_run:
-            print(f"  [DRY RUN] Would download: {entry.video_id}")
+            print(f"  [DRY RUN] Would download from: https://www.youtube.com/watch?v={entry.video_id}")
             report.skipped_dry_run.append(entry)
             write_report(report, output_path, dry_run)
             continue
 
         # Download the song
+        print(f"  Downloading...")
         success, error = download_song(entry, songs_folder)
 
         if success:
-            print("  Downloaded successfully")
+            # Extract title from the downloaded filename
+            downloaded_file = find_downloaded_file(songs_folder, entry.index)
+            if downloaded_file:
+                entry.title = extract_title_from_filename(downloaded_file)
+                print(f"  Downloaded: {entry.title or downloaded_file.name}")
+            else:
+                print(f"  Downloaded successfully (could not locate file)")
             report.downloaded.append(entry)
             # Update existing indices so we don't try to overwrite
             existing_indices.add(entry.index)
@@ -303,9 +332,7 @@ def write_report(report: DownloadReport, output_path: Path, dry_run: bool) -> No
         lines.append("WOULD DOWNLOAD (dry run)")
         lines.append("-" * 40)
         for entry in report.skipped_dry_run:
-            title_display = entry.title or "(title not fetched)"
-            lines.append(f"  [{entry.index_str}] {title_display}")
-            lines.append(f"           Video ID: {entry.video_id}")
+            lines.append(f"  [{entry.index_str}] Video ID: {entry.video_id}")
         lines.append("")
 
     lines.append("=" * 60)
