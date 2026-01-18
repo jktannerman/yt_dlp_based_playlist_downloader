@@ -1,8 +1,12 @@
 """
 Song Downloader
 
-Downloads missing songs from YouTube based on a manifest file.
-Uses yt-dlp to download audio individually by video ID.
+Downloads missing songs from YouTube based on a playlist.
+First fetches the playlist manifest using yt-dlp, then downloads missing songs.
+
+Usage:
+    py -3.13 song_downloader.py <songs_folder> <playlist_id>
+    py -3.13 song_downloader.py <songs_folder> --use-manifest <manifest_file>
 
 Expected manifest format per line:
 0001;;;VIDEO_ID;;;Song Title
@@ -209,6 +213,56 @@ def check_ytdlp_installed() -> bool:
         return False
 
 
+# Default manifest filename
+MANIFEST_FILENAME: str = "playlist_manifest.txt"
+
+
+def download_playlist_manifest(playlist_id: str, songs_folder: Path) -> tuple[bool, Path, str]:
+    """
+    Downloads the playlist manifest using yt-dlp.
+
+    Args:
+        playlist_id: YouTube playlist ID (e.g., PLxxxxxx).
+        songs_folder: Folder where the manifest file will be saved.
+
+    Returns:
+        Tuple of (success, manifest_path, error_message).
+    """
+    manifest_path = songs_folder / MANIFEST_FILENAME
+    playlist_url = f"https://www.youtube.com/playlist?list={playlist_id}"
+
+    print(f"Fetching playlist manifest from: {playlist_url}")
+
+    try:
+        result = subprocess.run(
+            [
+                "yt-dlp",
+                "--flat-playlist",
+                "--print", "%(playlist_index)s;;;%(id)s;;;%(title)s",
+                playlist_url,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5 minute timeout
+        )
+
+        if result.returncode != 0:
+            return False, manifest_path, result.stderr.strip() or "Unknown error"
+
+        # Write manifest to file
+        manifest_content = result.stdout
+        if not manifest_content.strip():
+            return False, manifest_path, "Empty playlist or no videos found"
+
+        manifest_path.write_text(manifest_content, encoding="utf-8-sig")
+        return True, manifest_path, ""
+
+    except subprocess.TimeoutExpired:
+        return False, manifest_path, "Manifest fetch timed out after 5 minutes"
+    except Exception as e:
+        return False, manifest_path, str(e)
+
+
 def download_song(entry: ManifestEntry, songs_folder: Path) -> tuple[bool, str]:
     """
     Downloads a single song using yt-dlp.
@@ -384,7 +438,8 @@ def write_report(report: DownloadReport, output_path: Path, dry_run: bool) -> No
 def main() -> int:
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="Download missing songs from YouTube based on a manifest file.",
+        description="Download missing songs from a YouTube playlist.",
+        epilog="Either provide a playlist_id or use --use-manifest with an existing file.",
     )
 
     parser.add_argument(
@@ -394,9 +449,19 @@ def main() -> int:
     )
 
     parser.add_argument(
-        "manifest_filename",
+        "playlist_id",
         type=str,
-        help="Name of the manifest file within songs_folder",
+        nargs="?",
+        default=None,
+        help="YouTube playlist ID (e.g., PLxxxxxxxx)",
+    )
+
+    parser.add_argument(
+        "--use-manifest",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="Use an existing manifest file instead of fetching from YouTube",
     )
 
     parser.add_argument(
@@ -421,20 +486,42 @@ def main() -> int:
 
     args = parser.parse_args()
 
+    # Validate: must have either playlist_id or --use-manifest, but not both
+    if args.playlist_id and args.use_manifest:
+        print("Error: Cannot specify both playlist_id and --use-manifest")
+        return 1
+
+    if not args.playlist_id and not args.use_manifest:
+        print("Error: Must provide either a playlist_id or --use-manifest")
+        parser.print_usage()
+        return 1
+
     # Validate paths
     if not args.songs_folder.is_dir():
         print(f"Error: Songs folder not found: {args.songs_folder}")
         return 1
 
-    manifest_path = args.songs_folder / args.manifest_filename
-    if not manifest_path.is_file():
-        print(f"Error: Manifest file not found: {manifest_path}")
-        return 1
-
     # Check yt-dlp
-    if not args.dry_run and not check_ytdlp_installed():
+    if not check_ytdlp_installed():
         print("Error: yt-dlp is not installed or not in PATH")
         return 1
+
+    # Determine manifest path
+    if args.use_manifest:
+        manifest_path = args.use_manifest
+        if not manifest_path.is_file():
+            print(f"Error: Manifest file not found: {manifest_path}")
+            return 1
+        print(f"Using existing manifest: {manifest_path}")
+    else:
+        # Download manifest from playlist
+        success, manifest_path, error = download_playlist_manifest(
+            args.playlist_id, args.songs_folder
+        )
+        if not success:
+            print(f"Error: Failed to fetch playlist manifest: {error}")
+            return 1
+        print(f"Manifest saved to: {manifest_path}")
 
     output_path = args.output or (args.songs_folder / "download_report.txt")
 
