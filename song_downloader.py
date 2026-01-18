@@ -40,7 +40,7 @@ ENCODINGS_TO_TRY: list[str] = [
 ]
 
 # Download settings
-DOWNLOAD_DELAY_SECONDS: int = 15
+DOWNLOAD_DELAY_SECONDS: int = 4
 
 
 @dataclass
@@ -304,14 +304,11 @@ def download_missing_songs(
     existing_indices: set[int],
     output_path: Path,
     dry_run: bool = False,
-    start_offset: int = 0,
+    start_index: int = 0,
 ) -> DownloadReport:
     """Downloads all missing songs, writing reports incrementally."""
     report = DownloadReport()
     missing_entries = [e for idx, e in sorted(manifest.items()) if idx not in existing_indices]
-
-    # TODO: Remove this limit after testing
-    # missing_entries = missing_entries[:100]
 
     # Mark existing as already_exists
     for idx in existing_indices:
@@ -322,11 +319,24 @@ def download_missing_songs(
         print("No missing songs to download.")
         return report
 
-    # Rotate the list to start from the offset, then loop back
-    if start_offset > 0 and len(missing_entries) > 1:
-        effective_offset = start_offset % len(missing_entries)
-        missing_entries = missing_entries[effective_offset:] + missing_entries[:effective_offset]
-        print(f"Starting from offset {effective_offset} (rotated order)")
+    # Rotate the list to start from the given playlist index, then loop back
+    if start_index > 0 and len(missing_entries) > 1:
+        # Find the first entry with index >= start_index
+        rotate_pos = None
+        for i, entry in enumerate(missing_entries):
+            if entry.index >= start_index:
+                rotate_pos = i
+                break
+
+        if rotate_pos is None:
+            # No entry >= start_index found, wrap to beginning
+            print(f"No missing entries with index >= {start_index}, starting from index {missing_entries[0].index}")
+        elif rotate_pos > 0:
+            missing_entries = missing_entries[rotate_pos:] + missing_entries[:rotate_pos]
+            print(f"Starting from playlist index {missing_entries[0].index} (rotated order)")
+        else:
+            # rotate_pos == 0, first missing entry already >= start_index
+            print(f"Starting from playlist index {missing_entries[0].index}")
 
     print(f"Found {len(missing_entries)} missing songs to download.")
 
@@ -478,10 +488,10 @@ def main() -> int:
     )
 
     parser.add_argument(
-        "--start-offset",
+        "--start-index",
         type=int,
         default=0,
-        help="Skip ahead N songs in the queue, then loop back to process skipped ones",
+        help="Start downloading from this playlist index, then loop back to earlier ones",
     )
 
     args = parser.parse_args()
@@ -549,7 +559,7 @@ def main() -> int:
         existing_indices,
         output_path,
         dry_run=args.dry_run,
-        start_offset=args.start_offset,
+        start_index=args.start_index,
     )
 
     # Final report write (for dry-run or when no downloads attempted)
