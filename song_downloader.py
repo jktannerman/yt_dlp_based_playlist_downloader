@@ -71,7 +71,7 @@ def validate_manifest_content(content: str) -> bool:
         line = line.strip()
         if not line:
             continue
-        if re.match(r"^\d{4};;;", line):
+        if re.match(r"^\d+;;;", line):
             return True
     return False
 

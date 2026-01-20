@@ -85,7 +85,7 @@ def validate_alternates_content(content: str) -> bool:
         if not line:
             continue
         # Expect format: NNNN;;;video_id (2 fields)
-        if re.match(r"^\d{4};;;", line):
+        if re.match(r"^\d+;;;", line):
             return True
     return False
 
