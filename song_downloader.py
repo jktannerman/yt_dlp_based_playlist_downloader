@@ -307,6 +307,7 @@ def download_missing_songs(
     output_path: Path,
     dry_run: bool = False,
     start_index: int = 0,
+    limit: int | None = None,
 ) -> DownloadReport:
     """Downloads all missing songs, writing reports incrementally."""
     report = DownloadReport()
@@ -340,7 +341,11 @@ def download_missing_songs(
             # rotate_pos == 0, first missing entry already >= start_index
             print(f"Starting from playlist index {missing_entries[0].index}")
 
-    print(f"Found {len(missing_entries)} missing songs to download.")
+    if limit is not None and limit > 0:
+        missing_entries = missing_entries[:limit]
+
+    print(f"Found {len(missing_entries)} missing songs to download."
+          + (f" (limited to {limit})" if limit is not None and limit > 0 else ""))
 
     # Clear the failed manifest file at the start
     if not dry_run:
@@ -496,6 +501,13 @@ def main() -> int:
         help="Start downloading from this playlist index, then loop back to earlier ones",
     )
 
+    parser.add_argument(
+        "-n", "--limit",
+        type=int,
+        default=None,
+        help="Maximum number of songs to download (default: all)",
+    )
+
     args = parser.parse_args()
 
     # Validate: must have either playlist_id or --use-manifest, but not both
@@ -562,6 +574,7 @@ def main() -> int:
         output_path,
         dry_run=args.dry_run,
         start_index=args.start_index,
+        limit=args.limit,
     )
 
     # Final report write (for dry-run or when no downloads attempted)

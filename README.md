@@ -28,6 +28,7 @@ py -3.13 song_downloader.py <songs_folder> --use-manifest <manifest_file> [optio
 | `-o, --output FILE` | Report output path (default: `<songs_folder>/download_report.txt`) |
 | `--dry-run` | Show what would be downloaded without downloading |
 | `--start-index N` | Start from playlist index N, then loop back to earlier entries |
+| `-n, --limit N` | Maximum number of songs to download (default: all) |
 
 **Features:**
 - Fetches playlist manifest from YouTube or uses existing file
