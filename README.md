@@ -28,7 +28,7 @@ Downloads missing songs from a YouTube playlist.
 
 **Usage:**
 ```
-py -3.13 song_downloader.py <songs_folder> <playlist_id> [options]
+py -3.13 song_downloader.py <songs_folder> <playlist_id_or_url> [options]
 py -3.13 song_downloader.py <songs_folder> --use-manifest <manifest_file> [options]
 ```
 
@@ -36,7 +36,7 @@ py -3.13 song_downloader.py <songs_folder> --use-manifest <manifest_file> [optio
 | Argument | Description |
 |----------|-------------|
 | `songs_folder` | Folder where songs are/will be stored |
-| `playlist_id` | YouTube playlist ID (e.g., `PLxxxxxxxx`) |
+| `playlist_id` | YouTube playlist ID or full URL (e.g., `PLxxxxxxxx`, `https://www.youtube.com/playlist?list=PLxxxxxxxx`, or `https://music.youtube.com/playlist?list=PLxxxxxxxx`) |
 | `--use-manifest [FILE]` | Use existing manifest instead of fetching from YouTube. If no path is given, looks for `playlist_manifest.txt` in the songs folder |
 | `-o, --output FILE` | Report output path (default: `<songs_folder>/download_report.txt`) |
 | `--dry-run` | Show what would be downloaded without downloading |
@@ -45,6 +45,8 @@ py -3.13 song_downloader.py <songs_folder> --use-manifest <manifest_file> [optio
 | `--sort-by-views` | Sort by view count (descending) before downloading |
 
 **Features:**
+- Accepts raw playlist IDs or full YouTube/YouTube Music URLs
+- When a YouTube Music URL is provided, all downloads use `music.youtube.com`
 - Fetches playlist manifest from YouTube or uses existing file
 - Detects existing songs by index prefix or normalized title matching
 - Downloads audio using yt-dlp with `-x` (extract audio)

@@ -5,7 +5,7 @@ Downloads missing songs from YouTube based on a playlist.
 First fetches the playlist manifest using yt-dlp, then downloads missing songs.
 
 Usage:
-    py -3.13 song_downloader.py <songs_folder> <playlist_id>
+    py -3.13 song_downloader.py <songs_folder> <playlist_id_or_url>
     py -3.13 song_downloader.py <songs_folder> --use-manifest <manifest_file>
 
 Expected manifest format per line:
@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from manifest_common import (
     FULL_COLUMNS,
@@ -39,6 +40,27 @@ DOWNLOAD_DELAY_SECONDS: int = 4
 
 # Default manifest filename
 MANIFEST_FILENAME: str = "playlist_manifest.txt"
+
+
+def parse_playlist_input(raw: str) -> tuple[str, bool]:
+    """Parses a playlist ID or full YouTube/YTM URL.
+
+    Args:
+        raw: A raw playlist ID (e.g., PLxxxxxxxx) or a full URL
+            (e.g., https://www.youtube.com/playlist?list=PLxxxxxxxx
+            or https://music.youtube.com/playlist?list=PLxxxxxxxx).
+
+    Returns:
+        Tuple of (playlist_id, is_ytm). is_ytm is True when the input
+        is a YouTube Music URL.
+    """
+    parsed = urlparse(raw)
+    if parsed.hostname and "youtube" in parsed.hostname:
+        is_ytm = "music.youtube.com" in parsed.hostname
+        list_param = parse_qs(parsed.query).get("list")
+        if list_param:
+            return list_param[0], is_ytm
+    return raw, False
 
 
 @dataclass
@@ -97,18 +119,22 @@ def check_ytdlp_installed() -> bool:
         return False
 
 
-def download_playlist_manifest(playlist_id: str, songs_folder: Path) -> tuple[bool, Path, str]:
+def download_playlist_manifest(
+    playlist_id: str, songs_folder: Path, is_ytm: bool = False
+) -> tuple[bool, Path, str]:
     """Downloads the playlist manifest using yt-dlp.
 
     Args:
         playlist_id: YouTube playlist ID (e.g., PLxxxxxx).
         songs_folder: Folder where the manifest file will be saved.
+        is_ytm: If True, use music.youtube.com as the source.
 
     Returns:
         Tuple of (success, manifest_path, error_message).
     """
     manifest_path = songs_folder / MANIFEST_FILENAME
-    playlist_url = f"https://www.youtube.com/playlist?list={playlist_id}"
+    base = "https://music.youtube.com" if is_ytm else "https://www.youtube.com"
+    playlist_url = f"{base}/playlist?list={playlist_id}"
 
     print(f"Fetching playlist manifest from: {playlist_url}")
 
@@ -145,15 +171,23 @@ def download_playlist_manifest(playlist_id: str, songs_folder: Path) -> tuple[bo
         return False, manifest_path, str(e)
 
 
-def download_song(entry: ManifestEntry, songs_folder: Path) -> tuple[bool, str]:
+def download_song(
+    entry: ManifestEntry, songs_folder: Path, is_ytm: bool = False
+) -> tuple[bool, str]:
     """Downloads a single song using yt-dlp.
+
+    Args:
+        entry: The manifest entry for the song.
+        songs_folder: Folder where the song will be saved.
+        is_ytm: If True, use music.youtube.com as the source.
 
     Returns:
         Tuple of (success, error_message).
     """
     sanitized_title = sanitize_filename(entry.title)
     output_template = str(songs_folder / f"{entry.index_str} - {sanitized_title}.%(ext)s")
-    video_url = f"https://www.youtube.com/watch?v={entry.video_id}"
+    base = "https://music.youtube.com" if is_ytm else "https://www.youtube.com"
+    video_url = f"{base}/watch?v={entry.video_id}"
 
     try:
         result = subprocess.run(
@@ -188,6 +222,7 @@ def download_missing_songs(
     start_index: int = 0,
     limit: int | None = None,
     sort_by_views: bool = False,
+    is_ytm: bool = False,
 ) -> DownloadReport:
     """Downloads all missing songs, writing reports incrementally."""
     report = DownloadReport()
@@ -246,7 +281,10 @@ def download_missing_songs(
         clear_failed_manifest(output_path)
 
     for i, entry in enumerate(missing_entries):
-        print(f"\n[{i + 1}/{len(missing_entries)}] {entry.index_str} - {entry.title}")
+        views_suffix = ""
+        if sort_by_views and entry.view_count is not None:
+            views_suffix = f" (views: {entry.view_count:,})"
+        print(f"\n[{i + 1}/{len(missing_entries)}] {entry.index_str} - {entry.title}{views_suffix}")
 
         if dry_run:
             if sort_by_views and entry.view_count is not None:
@@ -256,7 +294,7 @@ def download_missing_songs(
             report.skipped_dry_run.append(entry)
             continue
 
-        success, error = download_song(entry, songs_folder)
+        success, error = download_song(entry, songs_folder, is_ytm=is_ytm)
 
         if success:
             print("  Downloaded successfully")
@@ -368,7 +406,10 @@ def main() -> int:
         type=str,
         nargs="?",
         default=None,
-        help="YouTube playlist ID (e.g., PLxxxxxxxx)",
+        help="YouTube playlist ID or full URL (e.g., PLxxxxxxxx, "
+             "https://www.youtube.com/playlist?list=PLxxxxxxxx, or "
+             "https://music.youtube.com/playlist?list=PLxxxxxxxx). "
+             "When a YouTube Music URL is provided, downloads use music.youtube.com.",
     )
 
     parser.add_argument(
@@ -418,14 +459,18 @@ def main() -> int:
 
     args = parser.parse_args()
 
+    # Parse playlist input (extract ID and detect YTM)
+    is_ytm = False
+    if args.playlist_id:
+        args.playlist_id, is_ytm = parse_playlist_input(args.playlist_id)
+
     # Resolve --use-manifest when given without a path
     if args.use_manifest is True:
         args.use_manifest = args.songs_folder / MANIFEST_FILENAME
 
-    # Validate: must have either playlist_id or --use-manifest, but not both
+    # Validate: must have either playlist_id or --use-manifest
     if args.playlist_id and args.use_manifest:
-        print("Error: Cannot specify both playlist_id and --use-manifest")
-        return 1
+        print("Warning: --use-manifest overrides playlist_id; ignoring playlist_id")
 
     if not args.playlist_id and not args.use_manifest:
         print("Error: Must provide either a playlist_id or --use-manifest")
@@ -452,7 +497,7 @@ def main() -> int:
     else:
         # Download manifest from playlist
         success, manifest_path, error = download_playlist_manifest(
-            args.playlist_id, args.songs_folder
+            args.playlist_id, args.songs_folder, is_ytm=is_ytm
         )
         if not success:
             print(f"Error: Failed to fetch playlist manifest: {error}")
@@ -497,6 +542,7 @@ def main() -> int:
         start_index=args.start_index,
         limit=args.limit,
         sort_by_views=args.sort_by_views,
+        is_ytm=is_ytm,
     )
 
     # Final report write (for dry-run or when no downloads attempted)
