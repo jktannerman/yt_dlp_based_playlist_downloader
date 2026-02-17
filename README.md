@@ -57,6 +57,7 @@ py -3.13 song_downloader.py <songs_folder> --use-manifest <manifest_file> [optio
 **`--sort-by-views` flag:**
 - Sorts missing songs by view count (highest first) before downloading
 - Combined with `--limit N`, downloads only the N most popular missing songs
+- Re-indexes files by popularity rank: most popular = `0001`, second = `0002`, etc. (original playlist indices are replaced)
 - Entries without view data sort to the bottom
 - Overrides `--start-index` with a warning (start-index is about playlist ordering, which doesn't apply when sorting by popularity)
 - If the manifest has no view count data, a warning is printed
@@ -241,4 +242,3 @@ All tools support multiple file encodings:
 - UTF-16 (LE and BE)
 - CP1252 (Windows Western European)
 - ISO-8859-1 (Latin-1)
-

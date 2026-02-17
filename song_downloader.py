@@ -210,6 +210,14 @@ def download_missing_songs(
         )
         if start_index > 0:
             print("Warning: --start-index is ignored when --sort-by-views is active")
+
+        # Apply limit before re-indexing
+        if limit is not None and limit > 0:
+            missing_entries = missing_entries[:limit]
+
+        # Re-index by popularity rank (1-based)
+        for rank, entry in enumerate(missing_entries, start=1):
+            entry.index = rank
     else:
         # Rotate the list to start from the given playlist index, then loop back
         if start_index > 0 and len(missing_entries) > 1:
@@ -227,8 +235,8 @@ def download_missing_songs(
             else:
                 print(f"Starting from playlist index {missing_entries[0].index}")
 
-    if limit is not None and limit > 0:
-        missing_entries = missing_entries[:limit]
+        if limit is not None and limit > 0:
+            missing_entries = missing_entries[:limit]
 
     print(f"Found {len(missing_entries)} missing songs to download."
           + (f" (limited to {limit})" if limit is not None and limit > 0 else ""))
