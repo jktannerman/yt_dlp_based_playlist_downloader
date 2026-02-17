@@ -12,47 +12,22 @@ Example: 0001 - Flight [Monstercat Release].mp3
 """
 
 import argparse
-import re
 import shutil
 import sys
-import unicodedata
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-
-# Common audio/video extensions
-MEDIA_EXTENSIONS: set[str] = {
-    # Audio
-    ".mp3", ".m4a", ".flac", ".wav", ".ogg", ".opus", ".aac", ".wma",
-    # Video
-    ".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".wmv",
-}
-
-# Encodings to try when reading the manifest file
-ENCODINGS_TO_TRY: list[str] = [
-    "utf-8",
-    "utf-16",
-    "utf-16-le",
-    "utf-16-be",
-    "cp1252",     # Windows Western European
-    "iso-8859-1", # Latin-1
-    "utf-8-sig",  # UTF-8 with BOM (try last)
-]
-
-
-@dataclass
-class ManifestEntry:
-    """Represents a single entry from the playlist manifest."""
-    index: int
-    video_id: str
-    title: str
-
-    @property
-    def index_str(self) -> str:
-        """Returns the 4-digit zero-padded index string."""
-        return f"{self.index:04d}"
+from manifest_common import (
+    ManifestEntry,
+    extract_title_from_filename,
+    find_matching_entry,
+    get_file_index,
+    is_media_file,
+    normalize_title,
+    parse_manifest,
+)
 
 
 @dataclass
@@ -74,192 +49,8 @@ class FixerReport:
         )
 
 
-def validate_manifest_content(content: str) -> bool:
-    """
-    Validates that content looks like a valid manifest file.
-
-    Checks that at least one non-empty line matches the expected format:
-    4-digit number followed by " | ".
-
-    Args:
-        content: The decoded file content.
-
-    Returns:
-        True if content appears to be a valid manifest.
-    """
-    for line in content.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        # Check if line starts with 4 digits followed by ";;;"
-        if re.match(r"^\d{4};;;", line):
-            return True
-    return False
-
-
-def read_manifest_with_encoding(manifest_path: Path) -> tuple[str, str]:
-    """
-    Attempts to read the manifest file with multiple encodings.
-
-    Args:
-        manifest_path: Path to the manifest file.
-
-    Returns:
-        Tuple of (content, encoding_used).
-
-    Raises:
-        ValueError: If no encoding could successfully read the file.
-    """
-    for encoding in ENCODINGS_TO_TRY:
-        try:
-            content = manifest_path.read_text(encoding=encoding)
-            # Validate that content matches expected manifest format
-            if content and validate_manifest_content(content):
-                return content, encoding
-        except (UnicodeDecodeError, UnicodeError):
-            continue
-
-    raise ValueError(
-        f"Could not read manifest file with any of these encodings: "
-        f"{', '.join(ENCODINGS_TO_TRY)}"
-    )
-
-
-def parse_manifest(manifest_path: Path) -> dict[int, ManifestEntry]:
-    """
-    Parses the playlist manifest file.
-
-    Expected format per line:
-    0001;;;OVMuwa-HRCQ;;;[Drumstep] - Tristam & Braken - Flight [Monstercat Release]
-
-    Args:
-        manifest_path: Path to the manifest file.
-
-    Returns:
-        Dictionary mapping playlist index to ManifestEntry.
-    """
-    content, encoding_used = read_manifest_with_encoding(manifest_path)
-    print(f"Read manifest using encoding: {encoding_used}")
-
-    entries: dict[int, ManifestEntry] = {}
-
-    for line_num, line in enumerate(content.splitlines(), start=1):
-        line = line.strip()
-        if not line:
-            continue
-
-        # Split by ';;;' delimiter
-        parts = line.split(";;;")
-        if len(parts) != 3:
-            print(f"Warning: Skipping malformed line {line_num}: {line[:50]}...")
-            continue
-
-        try:
-            index = int(parts[0])
-            video_id = parts[1].strip()
-            title = parts[2].strip()
-
-            entries[index] = ManifestEntry(
-                index=index,
-                video_id=video_id,
-                title=title,
-            )
-        except ValueError as e:
-            print(f"Warning: Could not parse line {line_num}: {e}")
-            continue
-
-    return entries
-
-
-def normalize_title(title: str) -> str:
-    """
-    Normalizes a title for comparison by removing/replacing problematic characters.
-
-    This handles characters that are invalid in Windows filenames and may have
-    been replaced or removed during download. Also filters out non-ASCII characters
-    to avoid false positives from encoding differences between filenames and manifest.
-
-    Some programs convert special characters (colons, quotes, etc.) to dashes,
-    so we normalize all such punctuation to spaces for consistent comparison.
-
-    Args:
-        title: The title string to normalize.
-
-    Returns:
-        Normalized title for comparison purposes.
-    """
-    # First, normalize unicode to NFKD to handle fullwidth chars and decompose accents
-    normalized = unicodedata.normalize('NFKD', title.lower())
-
-    # Filter to only ASCII characters (removes accents, special unicode chars, etc.)
-    normalized = ''.join(c for c in normalized if ord(c) < 128)
-
-    # Convert all punctuation that may be transformed by downloaders to spaces
-    # This includes: - : " ' / \ | ? * < > [ ] ( ) _ and similar
-    # Keep only alphanumeric and spaces
-    normalized = re.sub(r'[^a-z0-9\s]', ' ', normalized)
-
-    # Collapse multiple spaces and strip
-    normalized = re.sub(r'\s+', ' ', normalized).strip()
-
-    return normalized
-
-
-def extract_title_from_filename(filename: str) -> str | None:
-    """
-    Extracts the title portion from a filename.
-
-    Handles both formats:
-    - "0001 - Title.ext" -> "Title"
-    - " - Title.ext" -> "Title"
-
-    Args:
-        filename: The filename (without directory path).
-
-    Returns:
-        The extracted title, or None if extraction failed.
-    """
-    # Remove extension
-    stem = Path(filename).stem
-
-    # Check for indexed format: "0001 - Title"
-    indexed_match = re.match(r"^\d{4}\s*-\s*(.+)$", stem)
-    if indexed_match:
-        return indexed_match.group(1).strip()
-
-    # Check for non-indexed format: " - Title"
-    non_indexed_match = re.match(r"^\s*-\s*(.+)$", stem)
-    if non_indexed_match:
-        return non_indexed_match.group(1).strip()
-
-    return None
-
-
-def get_file_index(filename: str) -> int | None:
-    """
-    Extracts the playlist index from a filename if present.
-
-    Args:
-        filename: The filename to check.
-
-    Returns:
-        The index as an integer, or None if not present.
-    """
-    stem = Path(filename).stem
-    match = re.match(r"^(\d{4})\s*-\s*", stem)
-    if match:
-        return int(match.group(1))
-    return None
-
-
-def is_media_file(path: Path) -> bool:
-    """Checks if a file is a media file based on extension."""
-    return path.suffix.lower() in MEDIA_EXTENSIONS
-
-
 def safe_rename_file(src: Path, dst: Path, timeout: float = 5.0) -> None:
-    """
-    Safely rename a file using copy-then-delete strategy with timeout.
+    """Safely rename a file using copy-then-delete strategy with timeout.
 
     This approach is more robust on Windows where Path.rename() can hang
     indefinitely when files are locked by indexers, antivirus, etc.
@@ -267,7 +58,7 @@ def safe_rename_file(src: Path, dst: Path, timeout: float = 5.0) -> None:
     Args:
         src: Source file path.
         dst: Destination file path.
-        timeout: Maximum seconds to wait for the operation (default: 30).
+        timeout: Maximum seconds to wait for the operation (default: 5).
 
     Raises:
         OSError: If copy or delete fails.
@@ -304,8 +95,7 @@ def safe_rename_file(src: Path, dst: Path, timeout: float = 5.0) -> None:
 
 
 def safe_delete_file(file_path: Path, timeout: float = 5.0) -> None:
-    """
-    Safely delete a file with timeout protection.
+    """Safely delete a file with timeout protection.
 
     Args:
         file_path: Path to the file to delete.
@@ -330,39 +120,10 @@ def safe_delete_file(file_path: Path, timeout: float = 5.0) -> None:
             raise TimeoutError(f"Delete timed out after {timeout}s: {file_path}")
 
 
-def find_matching_entry(
-    filename: str,
-    manifest: dict[int, ManifestEntry],
-) -> ManifestEntry | None:
-    """
-    Finds the manifest entry that matches a given filename by title.
-
-    Args:
-        filename: The filename to match.
-        manifest: The parsed manifest dictionary.
-
-    Returns:
-        The matching ManifestEntry, or None if no match found.
-    """
-    file_title = extract_title_from_filename(filename)
-    if not file_title:
-        return None
-
-    normalized_file_title = normalize_title(file_title)
-
-    for entry in manifest.values():
-        normalized_entry_title = normalize_title(entry.title)
-        if normalized_file_title == normalized_entry_title:
-            return entry
-
-    return None
-
-
 def build_manifest_by_title(
     manifest: dict[int, ManifestEntry],
 ) -> dict[str, ManifestEntry]:
-    """
-    Builds a lookup dictionary from normalized title to manifest entry.
+    """Builds a lookup dictionary from normalized title to manifest entry.
 
     Args:
         manifest: The parsed manifest dictionary.
@@ -382,8 +143,7 @@ def fix_playlist_files(
     manifest_path: Path,
     dry_run: bool = False,
 ) -> FixerReport:
-    """
-    Main function to fix playlist file names.
+    """Main function to fix playlist file names.
 
     Performs two operations:
     1. Delete duplicates: Remove songs whose titles have appeared before at a lower index
@@ -555,8 +315,7 @@ def fix_playlist_files(
 
 
 def write_report(report: FixerReport, output_path: Path, dry_run: bool) -> None:
-    """
-    Writes the fix report to a text file.
+    """Writes the fix report to a text file.
 
     Args:
         report: The FixerReport to write.

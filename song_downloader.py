@@ -9,11 +9,11 @@ Usage:
     py -3.13 song_downloader.py <songs_folder> --use-manifest <manifest_file>
 
 Expected manifest format per line:
-0001;;;VIDEO_ID;;;Song Title
+#COLUMNS: index;;;video_id;;;title;;;view_count
+0001;;;VIDEO_ID;;;Song Title;;;12345
 """
 
 import argparse
-import re
 import subprocess
 import sys
 import time
@@ -21,39 +21,24 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-
-# Common audio/video extensions
-MEDIA_EXTENSIONS: set[str] = {
-    ".mp3", ".m4a", ".flac", ".wav", ".ogg", ".opus", ".aac", ".wma",
-    ".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".wmv",
-}
-
-# Encodings to try when reading the manifest file
-ENCODINGS_TO_TRY: list[str] = [
-    "utf-8",
-    "utf-16",
-    "utf-16-le",
-    "utf-16-be",
-    "cp1252",
-    "iso-8859-1",
-    "utf-8-sig",
-]
+from manifest_common import (
+    FULL_COLUMNS,
+    ManifestEntry,
+    extract_title_from_filename,
+    find_matching_entry,
+    format_manifest_header,
+    format_manifest_line,
+    get_file_index,
+    is_media_file,
+    normalize_title,
+    parse_manifest,
+)
 
 # Download settings
 DOWNLOAD_DELAY_SECONDS: int = 4
 
-
-@dataclass
-class ManifestEntry:
-    """Represents a single entry from the playlist manifest."""
-    index: int
-    video_id: str
-    title: str
-
-    @property
-    def index_str(self) -> str:
-        """Returns the 4-digit zero-padded index string."""
-        return f"{self.index:04d}"
+# Default manifest filename
+MANIFEST_FILENAME: str = "playlist_manifest.txt"
 
 
 @dataclass
@@ -65,83 +50,6 @@ class DownloadReport:
     skipped_dry_run: list[ManifestEntry] = field(default_factory=list)
 
 
-def validate_manifest_content(content: str) -> bool:
-    """Validates that content looks like a valid manifest file."""
-    for line in content.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        if re.match(r"^\d+;;;", line):
-            return True
-    return False
-
-
-def read_manifest_with_encoding(manifest_path: Path) -> tuple[str, str]:
-    """Attempts to read the manifest file with multiple encodings."""
-    for encoding in ENCODINGS_TO_TRY:
-        try:
-            content = manifest_path.read_text(encoding=encoding)
-            # Strip UTF-8 BOM if present
-            content = content.removeprefix("\ufeff")
-            if content and validate_manifest_content(content):
-                return content, encoding
-        except (UnicodeDecodeError, UnicodeError):
-            continue
-
-    raise ValueError(
-        f"Could not read manifest file with any supported encoding"
-    )
-
-
-def parse_manifest(manifest_path: Path) -> dict[int, ManifestEntry]:
-    """Parses the playlist manifest file."""
-    content, encoding_used = read_manifest_with_encoding(manifest_path)
-    print(f"Read manifest using encoding: {encoding_used}")
-
-    entries: dict[int, ManifestEntry] = {}
-
-    for line_num, line in enumerate(content.splitlines(), start=1):
-        line = line.strip()
-        if not line:
-            continue
-
-        parts = line.split(";;;")
-        if len(parts) != 3:
-            print(f"Warning: Skipping malformed line {line_num}: {line[:50]}...")
-            continue
-
-        try:
-            index = int(parts[0])
-            video_id = parts[1].strip()
-            title = parts[2].strip()
-            entries[index] = ManifestEntry(index=index, video_id=video_id, title=title)
-        except ValueError as e:
-            print(f"Warning: Could not parse line {line_num}: {e}")
-            continue
-
-    return entries
-
-
-def normalize_title(title: str) -> str:
-    """Normalizes a title for comparison."""
-    normalized = title.lower()
-    replacements = [
-        ('"', ''), ('\uff02', ''), ("'", ''),
-        (':', ' -'), ('\uff1a', ' -'),
-        ('/', '-'), ('\uff0f', '-'), ('\u29f8', '-'),
-        ('\\', '-'), ('\uff3c', '-'),
-        ('|', '-'), ('\uff5c', '-'),
-        ('?', ''), ('\uff1f', ''),
-        ('*', ''), ('\uff0a', ''),
-        ('<', ''), ('\uff1c', ''),
-        ('>', ''), ('\uff1e', ''),
-        ('  ', ' '),
-    ]
-    for old, new in replacements:
-        normalized = normalized.replace(old, new)
-    return normalized.strip()
-
-
 def sanitize_filename(title: str) -> str:
     """Sanitizes a title for use in Windows filenames."""
     invalid_chars = '<>:"/\\|?*'
@@ -149,32 +57,6 @@ def sanitize_filename(title: str) -> str:
     for char in invalid_chars:
         sanitized = sanitized.replace(char, '-')
     return sanitized
-
-
-def is_media_file(path: Path) -> bool:
-    """Checks if a file is a media file based on extension."""
-    return path.suffix.lower() in MEDIA_EXTENSIONS
-
-
-def get_file_index(filename: str) -> int | None:
-    """Extracts the playlist index from a filename if present."""
-    stem = Path(filename).stem
-    match = re.match(r"^(\d{4})\s*-\s*", stem)
-    if match:
-        return int(match.group(1))
-    return None
-
-
-def extract_title_from_filename(filename: str) -> str | None:
-    """Extracts the title portion from a filename."""
-    stem = Path(filename).stem
-    indexed_match = re.match(r"^\d{4}\s*-\s*(.+)$", stem)
-    if indexed_match:
-        return indexed_match.group(1).strip()
-    non_indexed_match = re.match(r"^\s*-\s*(.+)$", stem)
-    if non_indexed_match:
-        return non_indexed_match.group(1).strip()
-    return None
 
 
 def find_existing_indices(songs_folder: Path, manifest: dict[int, ManifestEntry]) -> set[int]:
@@ -215,13 +97,8 @@ def check_ytdlp_installed() -> bool:
         return False
 
 
-# Default manifest filename
-MANIFEST_FILENAME: str = "playlist_manifest.txt"
-
-
 def download_playlist_manifest(playlist_id: str, songs_folder: Path) -> tuple[bool, Path, str]:
-    """
-    Downloads the playlist manifest using yt-dlp.
+    """Downloads the playlist manifest using yt-dlp.
 
     Args:
         playlist_id: YouTube playlist ID (e.g., PLxxxxxx).
@@ -240,7 +117,7 @@ def download_playlist_manifest(playlist_id: str, songs_folder: Path) -> tuple[bo
             [
                 "yt-dlp",
                 "--flat-playlist",
-                "--print", "%(playlist_index)s;;;%(id)s;;;%(title)s",
+                "--print", "%(playlist_index)s;;;%(id)s;;;%(title)s;;;%(view_count)s",
                 playlist_url,
             ],
             capture_output=True,
@@ -251,12 +128,15 @@ def download_playlist_manifest(playlist_id: str, songs_folder: Path) -> tuple[bo
         if result.returncode != 0:
             return False, manifest_path, result.stderr.strip() or "Unknown error"
 
-        # Write manifest to file
+        # Write manifest to file with header
         manifest_content = result.stdout
         if not manifest_content.strip():
             return False, manifest_path, "Empty playlist or no videos found"
 
-        manifest_path.write_text(manifest_content, encoding="utf-8-sig")
+        header = format_manifest_header(FULL_COLUMNS)
+        manifest_path.write_text(
+            header + "\n" + manifest_content, encoding="utf-8-sig"
+        )
         return True, manifest_path, ""
 
     except subprocess.TimeoutExpired:
@@ -266,8 +146,7 @@ def download_playlist_manifest(playlist_id: str, songs_folder: Path) -> tuple[bo
 
 
 def download_song(entry: ManifestEntry, songs_folder: Path) -> tuple[bool, str]:
-    """
-    Downloads a single song using yt-dlp.
+    """Downloads a single song using yt-dlp.
 
     Returns:
         Tuple of (success, error_message).
@@ -308,6 +187,7 @@ def download_missing_songs(
     dry_run: bool = False,
     start_index: int = 0,
     limit: int | None = None,
+    sort_by_views: bool = False,
 ) -> DownloadReport:
     """Downloads all missing songs, writing reports incrementally."""
     report = DownloadReport()
@@ -322,24 +202,30 @@ def download_missing_songs(
         print("No missing songs to download.")
         return report
 
-    # Rotate the list to start from the given playlist index, then loop back
-    if start_index > 0 and len(missing_entries) > 1:
-        # Find the first entry with index >= start_index
-        rotate_pos = None
-        for i, entry in enumerate(missing_entries):
-            if entry.index >= start_index:
-                rotate_pos = i
-                break
+    if sort_by_views:
+        # Sort descending by view count; None-view-count entries go last
+        missing_entries.sort(
+            key=lambda e: (e.view_count is not None, e.view_count or 0),
+            reverse=True,
+        )
+        if start_index > 0:
+            print("Warning: --start-index is ignored when --sort-by-views is active")
+    else:
+        # Rotate the list to start from the given playlist index, then loop back
+        if start_index > 0 and len(missing_entries) > 1:
+            rotate_pos = None
+            for i, entry in enumerate(missing_entries):
+                if entry.index >= start_index:
+                    rotate_pos = i
+                    break
 
-        if rotate_pos is None:
-            # No entry >= start_index found, wrap to beginning
-            print(f"No missing entries with index >= {start_index}, starting from index {missing_entries[0].index}")
-        elif rotate_pos > 0:
-            missing_entries = missing_entries[rotate_pos:] + missing_entries[:rotate_pos]
-            print(f"Starting from playlist index {missing_entries[0].index} (rotated order)")
-        else:
-            # rotate_pos == 0, first missing entry already >= start_index
-            print(f"Starting from playlist index {missing_entries[0].index}")
+            if rotate_pos is None:
+                print(f"No missing entries with index >= {start_index}, starting from index {missing_entries[0].index}")
+            elif rotate_pos > 0:
+                missing_entries = missing_entries[rotate_pos:] + missing_entries[:rotate_pos]
+                print(f"Starting from playlist index {missing_entries[0].index} (rotated order)")
+            else:
+                print(f"Starting from playlist index {missing_entries[0].index}")
 
     if limit is not None and limit > 0:
         missing_entries = missing_entries[:limit]
@@ -355,7 +241,10 @@ def download_missing_songs(
         print(f"\n[{i + 1}/{len(missing_entries)}] {entry.index_str} - {entry.title}")
 
         if dry_run:
-            print("  [DRY RUN] Would download")
+            if sort_by_views and entry.view_count is not None:
+                print(f"  [DRY RUN] Would download (views: {entry.view_count:,})")
+            else:
+                print("  [DRY RUN] Would download")
             report.skipped_dry_run.append(entry)
             continue
 
@@ -386,15 +275,16 @@ def get_failed_manifest_path(output_path: Path) -> Path:
 
 
 def clear_failed_manifest(output_path: Path) -> None:
-    """Clears/creates the failed downloads manifest file."""
+    """Clears/creates the failed downloads manifest file with header."""
     failed_path = get_failed_manifest_path(output_path)
-    failed_path.write_text("", encoding="utf-8-sig")
+    header = format_manifest_header(FULL_COLUMNS)
+    failed_path.write_text(header + "\n", encoding="utf-8-sig")
 
 
 def append_failed_entry(entry: ManifestEntry, output_path: Path) -> None:
     """Appends a single failed entry to the failed downloads manifest."""
     failed_path = get_failed_manifest_path(output_path)
-    line = f"{entry.index_str};;;{entry.video_id};;;{entry.title}\n"
+    line = format_manifest_line(entry, FULL_COLUMNS) + "\n"
     with open(failed_path, "a", encoding="utf-8-sig") as f:
         f.write(line)
 
@@ -508,6 +398,13 @@ def main() -> int:
         help="Maximum number of songs to download (default: all)",
     )
 
+    parser.add_argument(
+        "--sort-by-views",
+        action="store_true",
+        help="Sort by view count (descending) before downloading. "
+             "Combined with --limit, downloads only the N most popular songs.",
+    )
+
     args = parser.parse_args()
 
     # Validate: must have either playlist_id or --use-manifest, but not both
@@ -552,6 +449,8 @@ def main() -> int:
     print(f"Songs folder: {args.songs_folder}")
     print(f"Manifest file: {manifest_path}")
     print(f"Dry run: {args.dry_run}")
+    if args.sort_by_views:
+        print(f"Sort by views: enabled")
     print("-" * 40)
 
     # Parse manifest
@@ -561,6 +460,13 @@ def main() -> int:
     except Exception as e:
         print(f"Error: Failed to parse manifest: {e}")
         return 1
+
+    # Warn if sort-by-views but no view data
+    if args.sort_by_views:
+        has_view_data = any(e.view_count is not None for e in manifest.values())
+        if not has_view_data:
+            print("Warning: --sort-by-views is set but no entries have view count data.")
+            print("         Songs will be sorted with all entries treated equally.")
 
     # Find existing songs
     existing_indices = find_existing_indices(args.songs_folder, manifest)
@@ -575,6 +481,7 @@ def main() -> int:
         dry_run=args.dry_run,
         start_index=args.start_index,
         limit=args.limit,
+        sort_by_views=args.sort_by_views,
     )
 
     # Final report write (for dry-run or when no downloads attempted)

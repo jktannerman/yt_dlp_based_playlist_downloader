@@ -9,6 +9,19 @@ Tools for downloading songs from YouTube playlists and maintaining playlist file
 
 ## Programs
 
+### manifest_common.py
+
+Shared library used by all other scripts. Contains:
+- `ManifestEntry` dataclass (with optional `view_count` field)
+- Manifest parsing with header-based and legacy format support
+- Title normalization (NFKD + ASCII-only + regex)
+- File utility functions (`is_media_file`, `get_file_index`, `extract_title_from_filename`)
+- Constants (`MEDIA_EXTENSIONS`, `ENCODINGS_TO_TRY`, `MANIFEST_DELIMITER`)
+
+This is not a standalone tool — it is imported by the other scripts.
+
+---
+
 ### song_downloader.py
 
 Downloads missing songs from a YouTube playlist.
@@ -29,6 +42,7 @@ py -3.13 song_downloader.py <songs_folder> --use-manifest <manifest_file> [optio
 | `--dry-run` | Show what would be downloaded without downloading |
 | `--start-index N` | Start from playlist index N, then loop back to earlier entries |
 | `-n, --limit N` | Maximum number of songs to download (default: all) |
+| `--sort-by-views` | Sort by view count (descending) before downloading |
 
 **Features:**
 - Fetches playlist manifest from YouTube or uses existing file
@@ -38,10 +52,18 @@ py -3.13 song_downloader.py <songs_folder> --use-manifest <manifest_file> [optio
 - Creates `failed_downloads.txt` listing failed entries for recovery
 - Rate limiting between downloads (4 second delay)
 - Handles multiple file encodings (UTF-8, UTF-16, CP1252, etc.)
+- Tracks view counts in manifest for popularity-based sorting
+
+**`--sort-by-views` flag:**
+- Sorts missing songs by view count (highest first) before downloading
+- Combined with `--limit N`, downloads only the N most popular missing songs
+- Entries without view data sort to the bottom
+- Overrides `--start-index` with a warning (start-index is about playlist ordering, which doesn't apply when sorting by popularity)
+- If the manifest has no view count data, a warning is printed
 
 **Output files:**
 - `download_report.txt` - Summary of downloaded, existing, and failed songs
-- `failed_downloads.txt` - Manifest-format list of failed downloads
+- `failed_downloads.txt` - Manifest-format list of failed downloads (with header)
 - `playlist_manifest.txt` - Saved playlist manifest (when fetched from YouTube)
 
 ---
@@ -163,16 +185,31 @@ py -3.13 playlist_fixer.py <songs_folder> <manifest_file> [options]
 
 ## Manifest Format
 
-All tools use the same manifest format:
+Manifests use the `;;;` (triple semicolon) delimiter. The new format includes a header line:
+
+```
+#COLUMNS: index;;;video_id;;;title;;;view_count
+0001;;;dQw4w9WgXcQ;;;Never Gonna Give You Up;;;1500000000
+0002;;;9bZkp7q19f0;;;Gangnam Style;;;5000000000
+```
+
+**Header line:** Starts with `#COLUMNS:` followed by the column names separated by `;;;`. This declares what fields are present and in what order.
+
+**Legacy format (still fully supported):**
 ```
 0001;;;VIDEO_ID;;;Song Title
 0002;;;VIDEO_ID;;;Song Title
 ```
 
-Fields are separated by `;;;` (triple semicolon):
-1. 4-digit zero-padded playlist index
-2. YouTube video ID
-3. Song title
+Manifests without a `#COLUMNS:` header are automatically parsed as legacy 3-field format (index, video_id, title). All entries from legacy manifests will have `view_count = None`.
+
+**Fields:**
+| Column | Description |
+|--------|-------------|
+| `index` | 4-digit zero-padded playlist index |
+| `video_id` | YouTube video ID |
+| `title` | Song title |
+| `view_count` | View count (integer, or `NA` if unavailable) |
 
 ## File Naming Convention
 
@@ -191,6 +228,12 @@ Where `NNNN` is the 4-digit zero-padded playlist index.
 5. **Audit** - Run `playlist_auditor.py` to check for discrepancies
 6. **Fix** - Run `playlist_fixer.py` to clean up duplicates and fix misnamed files
 
+**Popularity-based download:**
+```
+py -3.13 song_downloader.py ./songs PLxxxxxxxx --sort-by-views --limit 50
+```
+This downloads only the 50 most-viewed missing songs from the playlist.
+
 ## Encoding Support
 
 All tools support multiple file encodings:
@@ -198,3 +241,4 @@ All tools support multiple file encodings:
 - UTF-16 (LE and BE)
 - CP1252 (Windows Western European)
 - ISO-8859-1 (Latin-1)
+

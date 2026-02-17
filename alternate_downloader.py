@@ -20,23 +20,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-
-# Common audio/video extensions
-MEDIA_EXTENSIONS: set[str] = {
-    ".mp3", ".m4a", ".flac", ".wav", ".ogg", ".opus", ".aac", ".wma",
-    ".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".wmv",
-}
-
-# Encodings to try when reading the alternates file
-ENCODINGS_TO_TRY: list[str] = [
-    "utf-8",
-    "utf-16",
-    "utf-16-le",
-    "utf-16-be",
-    "cp1252",
-    "iso-8859-1",
-    "utf-8-sig",
-]
+from manifest_common import (
+    ENCODINGS_TO_TRY,
+    MEDIA_EXTENSIONS,
+    get_file_index,
+    is_media_file,
+)
 
 # Download settings
 DOWNLOAD_DELAY_SECONDS: int = 4
@@ -62,20 +51,6 @@ class DownloadReport:
     already_exists: list[AlternateEntry] = field(default_factory=list)
     failed: list[tuple[AlternateEntry, str]] = field(default_factory=list)
     skipped_dry_run: list[AlternateEntry] = field(default_factory=list)
-
-
-def is_media_file(path: Path) -> bool:
-    """Checks if a file is a media file based on extension."""
-    return path.suffix.lower() in MEDIA_EXTENSIONS
-
-
-def get_file_index(filename: str) -> int | None:
-    """Extracts the playlist index from a filename if present."""
-    stem = Path(filename).stem
-    match = re.match(r"^(\d{4})\s*-\s*", stem)
-    if match:
-        return int(match.group(1))
-    return None
 
 
 def validate_alternates_content(content: str) -> bool:
@@ -183,8 +158,7 @@ def extract_title_from_filename(file_path: Path) -> str | None:
 
 
 def download_song(entry: AlternateEntry, songs_folder: Path) -> tuple[bool, str]:
-    """
-    Downloads a single song using yt-dlp.
+    """Downloads a single song using yt-dlp.
 
     Uses yt-dlp's built-in title sanitization via the %(title)s template.
 
