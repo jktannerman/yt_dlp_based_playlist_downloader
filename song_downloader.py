@@ -374,9 +374,12 @@ def main() -> int:
     parser.add_argument(
         "--use-manifest",
         type=Path,
+        nargs="?",
         default=None,
+        const=True,
         metavar="FILE",
-        help="Use an existing manifest file instead of fetching from YouTube",
+        help="Use an existing manifest file instead of fetching from YouTube. "
+             "If no path is given, looks for the default manifest in the songs folder.",
     )
 
     parser.add_argument(
@@ -414,6 +417,10 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+
+    # Resolve --use-manifest when given without a path
+    if args.use_manifest is True:
+        args.use_manifest = args.songs_folder / MANIFEST_FILENAME
 
     # Validate: must have either playlist_id or --use-manifest, but not both
     if args.playlist_id and args.use_manifest:
