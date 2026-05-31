@@ -25,14 +25,13 @@ from urllib.parse import parse_qs, urlparse
 from manifest_common import (
     FULL_COLUMNS,
     ManifestEntry,
-    extract_title_from_filename,
     find_matching_entry,
     format_manifest_header,
     format_manifest_line,
     get_file_index,
     is_media_file,
-    normalize_title,
     parse_manifest,
+    sanitize_filename,
 )
 
 # Download settings
@@ -72,15 +71,6 @@ class DownloadReport:
     skipped_dry_run: list[ManifestEntry] = field(default_factory=list)
 
 
-def sanitize_filename(title: str) -> str:
-    """Sanitizes a title for use in Windows filenames."""
-    invalid_chars = '<>:"/\\|?*'
-    sanitized = title
-    for char in invalid_chars:
-        sanitized = sanitized.replace(char, '-')
-    return sanitized
-
-
 def find_existing_indices(songs_folder: Path, manifest: dict[int, ManifestEntry]) -> set[int]:
     """Finds which manifest entries already exist in the folder."""
     existing_indices: set[int] = set()
@@ -95,14 +85,10 @@ def find_existing_indices(songs_folder: Path, manifest: dict[int, ManifestEntry]
             continue
 
         # Try matching by normalized title
-        file_title = extract_title_from_filename(filename)
-        if file_title:
-            normalized_file_title = normalize_title(file_title)
-            for entry in manifest.values():
-                if normalize_title(entry.title) == normalized_file_title:
-                    existing_indices.add(entry.index)
-                    break
-
+        entry = find_matching_entry(filename, manifest)
+        if entry:
+            existing_indices.add(entry.index)
+    
     return existing_indices
 
 

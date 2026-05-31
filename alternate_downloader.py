@@ -22,7 +22,9 @@ from pathlib import Path
 
 from manifest_common import (
     ENCODINGS_TO_TRY,
+    MANIFEST_DELIMITER,
     MEDIA_EXTENSIONS,
+    extract_title_from_filename,
     get_file_index,
     is_media_file,
 )
@@ -92,7 +94,7 @@ def parse_alternates(alternates_path: Path) -> list[AlternateEntry]:
         if not line:
             continue
 
-        parts = line.split(";;;")
+        parts = line.split(MANIFEST_DELIMITER)
         if len(parts) < 2:
             print(f"Warning: Skipping malformed line {line_num}: {line[:50]}...")
             print(f"         Expected format: NNNN;;;video_id[;;;comment]")
@@ -146,15 +148,6 @@ def find_downloaded_file(songs_folder: Path, index: int) -> Path | None:
 
     # Return most recently modified if multiple matches
     return max(media_matches, key=lambda f: f.stat().st_mtime)
-
-
-def extract_title_from_filename(file_path: Path) -> str | None:
-    """Extracts the title portion from a filename like '0001 - Title.ext'."""
-    stem = file_path.stem
-    match = re.match(r"^\d{4}\s*-\s*(.+)$", stem)
-    if match:
-        return match.group(1)
-    return None
 
 
 def download_song(entry: AlternateEntry, songs_folder: Path) -> tuple[bool, str]:
@@ -233,7 +226,7 @@ def download_alternates(
             # Extract title from the downloaded filename
             downloaded_file = find_downloaded_file(songs_folder, entry.index)
             if downloaded_file:
-                entry.title = extract_title_from_filename(downloaded_file)
+                entry.title = extract_title_from_filename(downloaded_file.name)
                 print(f"  Downloaded: {entry.title or downloaded_file.name}")
             else:
                 print(f"  Downloaded successfully (could not locate file)")

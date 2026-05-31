@@ -230,6 +230,24 @@ def parse_manifest(manifest_path: Path) -> dict[int, ManifestEntry]:
     return entries
 
 
+def sanitize_filename(title: str) -> str:
+    """Sanitizes a title for use as a Windows filename component.
+
+    Replaces characters that are illegal in Windows filenames with hyphens.
+
+    Args:
+        title: The title to sanitize.
+
+    Returns:
+        Title with invalid filename characters replaced by hyphens.
+    """
+    invalid_chars = '<>:"/\\|?*'
+    sanitized = title
+    for char in invalid_chars:
+        sanitized = sanitized.replace(char, '-')
+    return sanitized
+
+
 def normalize_title(title: str) -> str:
     """Normalizes a title for comparison.
 

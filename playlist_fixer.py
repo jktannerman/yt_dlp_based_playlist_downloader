@@ -27,6 +27,7 @@ from manifest_common import (
     is_media_file,
     normalize_title,
     parse_manifest,
+    sanitize_filename,
 )
 
 
@@ -239,10 +240,12 @@ def fix_playlist_files(
     # ========== PHASE 3: Fix offset errors ==========
     print("Phase 3: Fixing offset errors...")
 
-    # Build set of occupied indices (after deletions)
-    occupied_indices: set[int] = set(files_by_index.keys())
+    # Step 3a: Classify all files and collect pending renames.
+    # A rename is (current_file_path, source_idx, target_idx, new_filename).
+    # We gather everything first so we can resolve chains in dependency order.
+    RenameTask = tuple[Path, int | None, int, str]
+    pending: list[RenameTask] = []
 
-    # Iterate over remaining files
     for file_path in media_files:
         if file_path in files_deleted:
             continue
@@ -256,8 +259,6 @@ def fix_playlist_files(
             continue
 
         norm_title = normalize_title(file_title)
-
-        # Look up manifest entry by title
         manifest_entry = manifest_by_title.get(norm_title)
 
         if not manifest_entry:
@@ -267,45 +268,98 @@ def fix_playlist_files(
         expected_index = manifest_entry.index
 
         if file_index == expected_index:
-            # Already correct
             report.already_correct.append(filename)
             continue
 
-        # File index is wrong - check if we can rename
-        if expected_index in occupied_indices:
-            # Conflict - correct slot is occupied
-            report.errors.append(
-                f"Cannot rename '{filename}' to index {expected_index:04d}: slot occupied"
-            )
-            continue
+        # Build sanitized new filename
+        new_filename = f"{expected_index:04d} - {sanitize_filename(manifest_entry.title)}{file_path.suffix}"
+        pending.append((file_path, file_index, expected_index, new_filename))
 
-        # Build new filename
-        extension = file_path.suffix
-        # Sanitize title for Windows filename
-        invalid_chars = r'<>:"/\|?*'
-        sanitized_title = manifest_entry.title
-        for char in invalid_chars:
-            sanitized_title = sanitized_title.replace(char, '-')
-        new_filename = f"{expected_index:04d} - {sanitized_title}{extension}"
-        new_path = file_path.parent / new_filename
+    # Step 3b: Execute renames in dependency order.
+    #
+    # A rename (A -> B) is blocked if B is currently the source of another pending
+    # rename — we must move that file first. Iterating until no renames remain
+    # handles arbitrarily long chains. If a full pass makes no progress, the
+    # remaining renames form a cycle; we break it by staging one file under a
+    # temporary index beyond all occupied slots.
+    pending_sources: set[int] = {src for _, src, _, _ in pending if src is not None}
 
-        if not dry_run:
-            try:
-                print(f"  Renaming: {filename}")
-                print(f"       -> {new_filename}")
-                safe_rename_file(file_path, new_path)
-                report.renamed_files.append((filename, new_filename))
-                # Update occupied indices
-                if file_index is not None and file_index in occupied_indices:
-                    occupied_indices.discard(file_index)
-                occupied_indices.add(expected_index)
-            except (OSError, FileExistsError, TimeoutError) as e:
-                report.errors.append(f"Failed to rename '{filename}': {e}")
-        else:
-            report.renamed_files.append((filename, new_filename))
-            if file_index is not None:
-                occupied_indices.discard(file_index)
-            occupied_indices.add(expected_index)
+    # Track live file paths so cycle-breaking temp renames update subsequent tasks.
+    # Index in `pending` -> current Path (may change after a temp rename).
+    live_paths: dict[int, Path] = {i: fp for i, (fp, *_) in enumerate(pending)}
+
+    remaining_indices: set[int] = set(range(len(pending)))
+    all_occupied: set[int] = set(files_by_index.keys())
+
+    max_passes = len(pending) + 1
+    for _pass in range(max_passes):
+        if not remaining_indices:
+            break
+
+        made_progress = False
+        for i in list(remaining_indices):
+            _, source_idx, target_idx, new_filename = pending[i]
+            file_path = live_paths[i]
+
+            # Blocked if another pending rename still sits at our target slot.
+            if target_idx in pending_sources:
+                continue
+
+            new_path = file_path.parent / new_filename
+            if not dry_run:
+                try:
+                    print(f"  Renaming: {file_path.name}")
+                    print(f"       -> {new_filename}")
+                    safe_rename_file(file_path, new_path)
+                    report.renamed_files.append((pending[i][0].name, new_filename))
+                except (OSError, FileExistsError, TimeoutError) as e:
+                    report.errors.append(f"Failed to rename '{file_path.name}': {e}")
+            else:
+                report.renamed_files.append((pending[i][0].name, new_filename))
+
+            if source_idx is not None:
+                pending_sources.discard(source_idx)
+            remaining_indices.discard(i)
+            made_progress = True
+
+        if not made_progress and remaining_indices:
+            # All remaining renames are in a cycle. Break one by moving its
+            # source file to a temporary slot beyond the highest occupied index.
+            i = next(iter(remaining_indices))
+            _, source_idx, target_idx, new_filename = pending[i]
+            file_path = live_paths[i]
+
+            temp_idx = max(all_occupied | pending_sources, default=0) + 1
+            temp_filename = f"{temp_idx:04d} - _TEMP_{file_path.stem}{file_path.suffix}"
+            temp_path = file_path.parent / temp_filename
+
+            if not dry_run:
+                try:
+                    safe_rename_file(file_path, temp_path)
+                    live_paths[i] = temp_path
+                except (OSError, FileExistsError, TimeoutError) as e:
+                    report.errors.append(
+                        f"Failed cycle-break temp rename for '{file_path.name}': {e}"
+                    )
+                    remaining_indices.discard(i)
+                    if source_idx is not None:
+                        pending_sources.discard(source_idx)
+                    continue
+            else:
+                live_paths[i] = temp_path
+
+            if source_idx is not None:
+                pending_sources.discard(source_idx)
+            pending_sources.add(temp_idx)
+            all_occupied.add(temp_idx)
+            # Update pending entry so next pass uses temp as source
+            pending[i] = (temp_path, temp_idx, target_idx, new_filename)
+
+    for i in remaining_indices:
+        _, source_idx, target_idx, new_filename = pending[i]
+        report.errors.append(
+            f"Cannot rename '{live_paths[i].name}' to index {target_idx:04d}: unresolved conflict"
+        )
 
     print(f"  Files to rename: {len(report.renamed_files)}")
     print(f"  Already correct: {len(report.already_correct)}")
